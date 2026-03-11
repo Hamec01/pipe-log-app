@@ -190,7 +190,10 @@ export function CreateLogPage() {
       const rows = await listBundles()
       setBundles(rows)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not save log.'
+      const rawMessage = error instanceof Error ? error.message : 'Could not save log.'
+      const message = rawMessage.startsWith('Failed at step:')
+        ? rawMessage
+        : 'Failed at step: create log flow'
       setErrorMessage(message)
     } finally {
       setIsSaving(false)
