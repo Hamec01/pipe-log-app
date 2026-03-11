@@ -9,6 +9,7 @@ export interface SupabaseBundle {
 
 export interface SupabaseBundleSummary {
   bundle: SupabaseBundle
+  pipesCount: number
   logsCount: number
 }
 
@@ -175,17 +176,75 @@ export async function listBundleLogs(bundleId: number): Promise<SupabaseLogSumma
 
 export async function listBundleSummaries(): Promise<SupabaseBundleSummary[]> {
   const bundles = await listBundles()
-  const summaries: SupabaseBundleSummary[] = []
-
-  for (const bundle of bundles) {
-    const logs = await listBundleLogs(bundle.id)
-    summaries.push({
-      bundle,
-      logsCount: logs.length,
-    })
+  if (bundles.length === 0) {
+    return []
   }
 
-  return summaries
+  const bundleIds = bundles.map((bundle) => bundle.id)
+  const { data: bundlePipeRows, error: bundlePipeError } = await supabase
+    .from('bundle_pipes')
+    .select('bundle_id,pipe_id')
+    .in('bundle_id', bundleIds)
+
+  if (bundlePipeError) {
+    throw new Error(bundlePipeError.message)
+  }
+
+  const pipesByBundle = new Map<number, Set<number>>()
+  const allPipeIds = new Set<number>()
+
+  for (const row of bundlePipeRows ?? []) {
+    if (!pipesByBundle.has(row.bundle_id)) {
+      pipesByBundle.set(row.bundle_id, new Set<number>())
+    }
+
+    pipesByBundle.get(row.bundle_id)?.add(row.pipe_id)
+    allPipeIds.add(row.pipe_id)
+  }
+
+  const logIdsByPipe = new Map<number, Set<number>>()
+  const uniquePipeIds = [...allPipeIds]
+
+  if (uniquePipeIds.length > 0) {
+    const { data: logPipeRows, error: logPipeError } = await supabase
+      .from('log_pipes')
+      .select('pipe_id,log_id')
+      .in('pipe_id', uniquePipeIds)
+
+    if (logPipeError) {
+      throw new Error(logPipeError.message)
+    }
+
+    for (const row of logPipeRows ?? []) {
+      if (!logIdsByPipe.has(row.pipe_id)) {
+        logIdsByPipe.set(row.pipe_id, new Set<number>())
+      }
+
+      logIdsByPipe.get(row.pipe_id)?.add(row.log_id)
+    }
+  }
+
+  return bundles.map((bundle) => {
+    const pipeIds = pipesByBundle.get(bundle.id) ?? new Set<number>()
+    const logIds = new Set<number>()
+
+    for (const pipeId of pipeIds) {
+      const logsForPipe = logIdsByPipe.get(pipeId)
+      if (!logsForPipe) {
+        continue
+      }
+
+      for (const logId of logsForPipe) {
+        logIds.add(logId)
+      }
+    }
+
+    return {
+      bundle,
+      pipesCount: pipeIds.size,
+      logsCount: logIds.size,
+    }
+  })
 }
 
 export async function deleteBundle(bundleId: number): Promise<void> {

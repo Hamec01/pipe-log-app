@@ -1,13 +1,26 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { BundleCard } from '../components/BundleCard'
-import { createBundleIfNotExists, deleteBundle, listBundleSummaries } from '../services/bundleService'
+import { Link } from 'react-router-dom'
+import {
+  deleteBundle,
+  getOrCreateBundleByNumber,
+  listBundleSummaries,
+} from '../services/supabaseBundleService'
 
 interface BundleView {
   id: number
   bundleNumber: string
   createdAt: string
-  syncStatus: 'local' | 'synced' | 'modified' | 'deleted'
+  pipesCount: number
   logsCount: number
+}
+
+function formatDateTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return date.toLocaleString()
 }
 
 export function BundlesPage() {
@@ -30,7 +43,7 @@ export function BundlesPage() {
           id: row.bundle.id as number,
           bundleNumber: row.bundle.bundle_number,
           createdAt: row.bundle.created_at,
-          syncStatus: row.bundle.sync_status,
+          pipesCount: row.pipesCount,
           logsCount: row.logsCount,
         }))
 
@@ -53,7 +66,7 @@ export function BundlesPage() {
 
     try {
       setIsSubmitting(true)
-      const created = await createBundleIfNotExists(bundleNumber)
+      const created = await getOrCreateBundleByNumber(bundleNumber)
       setSuccessMessage(`Bundle ${created.bundle_number} is ready.`)
       setBundleNumber('')
       await loadBundles()
@@ -111,15 +124,18 @@ export function BundlesPage() {
 
       <div className="card-grid">
         {bundles.map((bundle) => (
-          <BundleCard
-            key={bundle.id}
-            id={bundle.id}
-            bundleNumber={bundle.bundleNumber}
-            logsCount={bundle.logsCount}
-            createdAt={bundle.createdAt}
-            syncStatus={bundle.syncStatus}
-            onDelete={onDeleteBundle}
-          />
+          <article key={bundle.id} className="card">
+            <h3 className="card-title">Bundle {bundle.bundleNumber}</h3>
+            <p className="muted">Pipes: {bundle.pipesCount}</p>
+            <p className="muted">Related Logs: {bundle.logsCount}</p>
+            <p className="muted">Created: {formatDateTime(bundle.createdAt)}</p>
+            <div className="card-actions">
+              <Link to={`/bundle/${bundle.id}`} className="button-link">Open</Link>
+              <button type="button" className="button-danger" onClick={() => void onDeleteBundle(bundle.id)}>
+                Delete Bundle
+              </button>
+            </div>
+          </article>
         ))}
       </div>
     </section>

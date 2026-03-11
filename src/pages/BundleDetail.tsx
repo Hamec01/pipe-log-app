@@ -107,6 +107,7 @@ export function BundleDetailPage() {
       {bundle ? (
         <>
           <p className="muted">Bundle Number: {bundle.bundle_number}</p>
+          <p className="muted">Created: {new Date(bundle.created_at).toLocaleString()}</p>
           <div className="quick-links">
             <button type="button" onClick={() => navigate('/create-log')}>Create Log</button>
           </div>
@@ -114,6 +115,7 @@ export function BundleDetailPage() {
 
           <section className="group-section">
             <h3>Pipes in Bundle</h3>
+            {!isLoading && !errorMessage ? <p className="muted">Pipe Count: {bundlePipes.length}</p> : null}
             {bundlePipes.length === 0 ? <p className="muted">No pipes linked to this bundle yet.</p> : null}
             <div className="card-grid">
               {bundlePipes.map((pipe) => (
@@ -128,6 +130,7 @@ export function BundleDetailPage() {
 
       <section className="group-section">
         <h3>Related Logs</h3>
+        {!isLoading && !errorMessage ? <p className="muted">Related Log Count: {logs.length}</p> : null}
         {!isLoading && !errorMessage && logs.length === 0 ? <p className="muted">This bundle has no related logs yet.</p> : null}
         <div className="card-grid">
           {logs.map((item) => (
