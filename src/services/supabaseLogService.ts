@@ -37,6 +37,7 @@ export interface SupabaseLog {
   date_time: string
   notes: string | null
   created_at: string
+  updated_at: string | null
 }
 
 export async function createLog(params: CreateSupabaseLogParams): Promise<SupabaseLog> {
@@ -53,7 +54,7 @@ export async function createLog(params: CreateSupabaseLogParams): Promise<Supaba
       date_time: params.dateTimeIso,
       notes: params.notes?.trim() || null,
     })
-    .select('id,log_number,pressure_bar,date_time,notes,created_at')
+    .select('id,log_number,pressure_bar,date_time,notes,created_at,updated_at')
     .single()
 
   if (error) {
@@ -66,7 +67,7 @@ export async function createLog(params: CreateSupabaseLogParams): Promise<Supaba
 export async function getLogById(logId: number): Promise<SupabaseLog | null> {
   const { data, error } = await supabase
     .from('logs')
-    .select('id,log_number,pressure_bar,date_time,notes,created_at')
+    .select('id,log_number,pressure_bar,date_time,notes,created_at,updated_at')
     .eq('id', logId)
     .maybeSingle()
 

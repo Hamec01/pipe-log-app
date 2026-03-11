@@ -11,19 +11,16 @@ export interface Database {
           bundle_number: string
           created_at: string
           updated_at: string | null
-          created_by: string | null
         }
         Insert: {
           id?: never
           bundle_number: string
           created_at?: string
           updated_at?: string
-          created_by?: string | null
         }
         Update: {
           bundle_number?: string
           updated_at?: string
-          created_by?: string | null
         }
         Relationships: []
       }
@@ -36,7 +33,6 @@ export interface Database {
           notes: string | null
           created_at: string
           updated_at: string | null
-          created_by: string | null
         }
         Insert: {
           id?: never
@@ -46,7 +42,6 @@ export interface Database {
           notes?: string | null
           created_at?: string
           updated_at?: string
-          created_by?: string | null
         }
         Update: {
           log_number?: string
@@ -54,7 +49,6 @@ export interface Database {
           date_time?: string
           notes?: string | null
           updated_at?: string
-          created_by?: string | null
         }
         Relationships: []
       }
@@ -121,29 +115,26 @@ export interface Database {
           log_id: number
           type: PhotoType
           storage_path: string
-          public_url: string | null
           file_name: string
           mime_type: string
           created_at: string
-          uploaded_by: string | null
+          updated_at: string | null
         }
         Insert: {
           id?: never
           log_id: number
           type: PhotoType
           storage_path: string
-          public_url?: string | null
           file_name: string
           mime_type: string
           created_at?: string
-          uploaded_by?: string | null
+          updated_at?: string
         }
         Update: {
-          public_url?: string | null
           file_name?: string
           mime_type?: string
           storage_path?: string
-          uploaded_by?: string | null
+          updated_at?: string
         }
         Relationships: []
       }

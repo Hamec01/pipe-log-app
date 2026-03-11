@@ -1,5 +1,4 @@
 import { supabase } from '../lib/supabase'
-import { getCurrentUser } from './authService'
 import type { PhotoKind } from '../models/types'
 
 const BUCKET_NAME = 'pipe-photos'
@@ -9,11 +8,10 @@ export interface CloudPhotoRecord {
   log_id: number
   type: PhotoKind
   storage_path: string
-  public_url: string | null
   file_name: string
   mime_type: string
   created_at: string
-  uploaded_by: string | null
+  updated_at: string | null
 }
 
 function sanitizeFileName(fileName: string): string {
@@ -26,7 +24,6 @@ export async function uploadCloudPhoto(params: {
   type: PhotoKind
   file: File
 }): Promise<CloudPhotoRecord> {
-  const user = await getCurrentUser()
   const safeName = sanitizeFileName(params.file.name)
   const storagePath = `${params.bundleId}/${params.logId}/${Date.now()}-${safeName}`
 
@@ -41,20 +38,16 @@ export async function uploadCloudPhoto(params: {
     throw new Error(uploadError.message)
   }
 
-  const { data: publicUrlData } = supabase.storage.from(BUCKET_NAME).getPublicUrl(storagePath)
-
   const { data, error } = await supabase
     .from('photos')
     .insert({
       log_id: params.logId,
       type: params.type,
       storage_path: storagePath,
-      public_url: publicUrlData.publicUrl,
       file_name: params.file.name,
       mime_type: params.file.type || 'application/octet-stream',
-      uploaded_by: user?.id ?? null,
     })
-    .select('id,log_id,type,storage_path,public_url,file_name,mime_type,created_at,uploaded_by')
+    .select('id,log_id,type,storage_path,file_name,mime_type,created_at,updated_at')
     .single()
 
   if (error) {
@@ -67,7 +60,7 @@ export async function uploadCloudPhoto(params: {
 export async function listCloudPhotosByLogId(logId: number): Promise<CloudPhotoRecord[]> {
   const { data, error } = await supabase
     .from('photos')
-    .select('id,log_id,type,storage_path,public_url,file_name,mime_type,created_at,uploaded_by')
+    .select('id,log_id,type,storage_path,file_name,mime_type,created_at,updated_at')
     .eq('log_id', logId)
     .order('created_at', { ascending: false })
 

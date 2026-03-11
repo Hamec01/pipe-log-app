@@ -1,13 +1,11 @@
 import type { BundleRecord, SyncStatus } from '../models/types'
 import { supabase } from '../lib/supabase'
-import { getCurrentUser } from './authService'
 
 interface CloudBundleRow {
   id: number
   bundle_number: string
   created_at: string
   updated_at: string | null
-  created_by: string | null
 }
 
 function toBundleRecord(row: CloudBundleRow): BundleRecord {
@@ -24,7 +22,7 @@ function toBundleRecord(row: CloudBundleRow): BundleRecord {
 export async function listCloudBundles(): Promise<BundleRecord[]> {
   const { data, error } = await supabase
     .from('bundles')
-    .select('id,bundle_number,created_at,updated_at,created_by')
+    .select('id,bundle_number,created_at,updated_at')
     .order('bundle_number', { ascending: true })
 
   if (error) {
@@ -37,7 +35,7 @@ export async function listCloudBundles(): Promise<BundleRecord[]> {
 export async function getCloudBundleById(bundleId: number): Promise<BundleRecord | undefined> {
   const { data, error } = await supabase
     .from('bundles')
-    .select('id,bundle_number,created_at,updated_at,created_by')
+    .select('id,bundle_number,created_at,updated_at')
     .eq('id', bundleId)
     .maybeSingle()
 
@@ -56,7 +54,7 @@ export async function getOrCreateCloudBundleByNumber(bundleNumber: string): Prom
 
   const { data: existing, error: fetchError } = await supabase
     .from('bundles')
-    .select('id,bundle_number,created_at,updated_at,created_by')
+    .select('id,bundle_number,created_at,updated_at')
     .eq('bundle_number', normalized)
     .maybeSingle()
 
@@ -68,15 +66,10 @@ export async function getOrCreateCloudBundleByNumber(bundleNumber: string): Prom
     return toBundleRecord(existing)
   }
 
-  const user = await getCurrentUser()
-
   const { data, error } = await supabase
     .from('bundles')
-    .insert({
-      bundle_number: normalized,
-      created_by: user?.id ?? null,
-    })
-    .select('id,bundle_number,created_at,updated_at,created_by')
+    .insert({ bundle_number: normalized })
+    .select('id,bundle_number,created_at,updated_at')
     .single()
 
   if (error) {

@@ -1,6 +1,5 @@
 import type { LogRecord, SyncStatus } from '../models/types'
 import { supabase } from '../lib/supabase'
-import { getCurrentUser } from './authService'
 
 interface CloudLogRow {
   id: number
@@ -10,7 +9,6 @@ interface CloudLogRow {
   notes: string | null
   created_at: string
   updated_at: string | null
-  created_by: string | null
 }
 
 function toLogRecord(row: CloudLogRow): LogRecord {
@@ -34,8 +32,6 @@ export async function createCloudLog(input: {
   dateTimeIso: string
   notes?: string
 }): Promise<LogRecord> {
-  const user = await getCurrentUser()
-
   const { data, error } = await supabase
     .from('logs')
     .insert({
@@ -43,9 +39,8 @@ export async function createCloudLog(input: {
       pressure_bar: input.pressureBar,
       date_time: input.dateTimeIso,
       notes: input.notes?.trim() || null,
-      created_by: user?.id ?? null,
     })
-    .select('id,log_number,pressure_bar,date_time,notes,created_at,updated_at,created_by')
+    .select('id,log_number,pressure_bar,date_time,notes,created_at,updated_at')
     .single()
 
   if (error) {
@@ -58,7 +53,7 @@ export async function createCloudLog(input: {
 export async function getCloudLogById(logId: number): Promise<LogRecord | undefined> {
   const { data, error } = await supabase
     .from('logs')
-    .select('id,log_number,pressure_bar,date_time,notes,created_at,updated_at,created_by')
+    .select('id,log_number,pressure_bar,date_time,notes,created_at,updated_at')
     .eq('id', logId)
     .maybeSingle()
 
@@ -100,7 +95,7 @@ export async function listCloudLogsByBundleId(bundleId: number): Promise<LogReco
 
   const { data: logs, error: logsError } = await supabase
     .from('logs')
-    .select('id,log_number,pressure_bar,date_time,notes,created_at,updated_at,created_by')
+    .select('id,log_number,pressure_bar,date_time,notes,created_at,updated_at')
     .in('id', logIds)
     .order('date_time', { ascending: false })
 

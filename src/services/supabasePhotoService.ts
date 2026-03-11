@@ -17,7 +17,7 @@ export interface SupabasePhoto {
   file_name: string
   mime_type: string
   created_at: string
-  public_url: string | null
+  updated_at: string | null
 }
 
 function extensionFromFile(file: File): string {
@@ -47,19 +47,16 @@ export async function uploadPhoto(params: UploadPhotoParams): Promise<SupabasePh
     throw new Error(uploadError.message)
   }
 
-  const { data: publicData } = supabase.storage.from(BUCKET_NAME).getPublicUrl(storagePath)
-
   const { data, error } = await supabase
     .from('photos')
     .insert({
       log_id: params.logId,
       type: params.type,
       storage_path: storagePath,
-      public_url: publicData.publicUrl,
       file_name: params.file.name,
       mime_type: params.file.type || 'application/octet-stream',
     })
-    .select('id,log_id,type,storage_path,file_name,mime_type,created_at,public_url')
+    .select('id,log_id,type,storage_path,file_name,mime_type,created_at,updated_at')
     .single()
 
   if (error) {
@@ -72,7 +69,7 @@ export async function uploadPhoto(params: UploadPhotoParams): Promise<SupabasePh
 export async function getPhotosByLog(logId: number): Promise<SupabasePhoto[]> {
   const { data, error } = await supabase
     .from('photos')
-    .select('id,log_id,type,storage_path,file_name,mime_type,created_at,public_url')
+    .select('id,log_id,type,storage_path,file_name,mime_type,created_at,updated_at')
     .eq('log_id', logId)
     .order('created_at', { ascending: false })
 
@@ -108,10 +105,6 @@ export async function deletePhoto(photoId: number): Promise<void> {
 }
 
 export function getPhotoUrl(photo: SupabasePhoto): string {
-  if (photo.public_url) {
-    return photo.public_url
-  }
-
   const { data } = supabase.storage.from(BUCKET_NAME).getPublicUrl(photo.storage_path)
   return data.publicUrl
 }
