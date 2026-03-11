@@ -22,11 +22,11 @@ export function LogCard({ log, pipesCount, photosCount, onDelete }: LogCardProps
   return (
     <article className="card">
       <h3 className="card-title">Log {log.log_number}</h3>
-      <SyncStatusBadge status={log.sync_status} />
       <p className="muted">Pressure: {log.pressure_bar} bar</p>
       <p className="muted">Date: {formatDateTime(log.date_time)}</p>
       <p className="muted">Pipes: {pipesCount} | Photos: {photosCount}</p>
       {log.notes ? <p>{log.notes}</p> : null}
+      <SyncStatusBadge status={log.sync_status ?? 'local'} />
       {typeof log.id === 'number' ? (
         <div className="card-actions">
           <Link to={`/log/${log.id}`} className="button-link">Open Log</Link>

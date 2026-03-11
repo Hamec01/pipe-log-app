@@ -1,7 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { BundleCard } from '../components/BundleCard'
-import { createBundleIfNotExists, deleteBundle, getAllBundles } from '../services/bundleService'
-import { getLogsByBundle } from '../services/logService'
+import { createBundleIfNotExists, deleteBundle, listBundleSummaries } from '../services/bundleService'
 
 interface BundleView {
   id: number
@@ -24,22 +23,16 @@ export function BundlesPage() {
     setErrorMessage(null)
 
     try {
-      const rows = await getAllBundles()
-
-      const views = await Promise.all(
-        rows
-          .filter((bundle): bundle is typeof bundle & { id: number } => typeof bundle.id === 'number')
-          .map(async (bundle) => {
-            const logs = await getLogsByBundle(bundle.id)
-            return {
-              id: bundle.id,
-              bundleNumber: bundle.bundle_number,
-              createdAt: bundle.created_at,
-              syncStatus: bundle.sync_status,
-              logsCount: logs.length,
-            }
-          }),
-      )
+      const rows = await listBundleSummaries()
+      const views = rows
+        .filter((row) => typeof row.bundle.id === 'number')
+        .map((row) => ({
+          id: row.bundle.id as number,
+          bundleNumber: row.bundle.bundle_number,
+          createdAt: row.bundle.created_at,
+          syncStatus: row.bundle.sync_status,
+          logsCount: row.logsCount,
+        }))
 
       setBundles(views)
     } catch {

@@ -3,12 +3,9 @@ import { Link, useParams } from 'react-router-dom'
 import { CameraCapture } from '../components/CameraCapture'
 import { ExportLogPdfButton } from '../components/ExportLogPdfButton'
 import { PhotoGrid, type PhotoGridItem } from '../components/PhotoGrid'
-import { PipeList } from '../components/PipeList'
-import { SyncStatusBadge } from '../components/SyncStatusBadge'
-import type { PhotoKind, PhotoRecord, PipeRecord, LogRecord } from '../models/types'
-import { getLogById } from '../services/logService'
-import { createPhotoObjectUrl, deletePhoto, listPhotosByLogId, savePhoto } from '../services/photoService'
-import { listPipesByLogId } from '../services/pipeService'
+import { deleteLog, getBundleGroupsForLog, getLogById, type SupabaseLog } from '../services/supabaseLogService'
+import { deletePhoto, getPhotoUrl, getPhotosByLog, uploadPhoto, type SupabasePhoto } from '../services/supabasePhotoService'
+import type { PhotoKind } from '../models/types'
 
 function formatDateTime(isoValue: string): string {
   const date = new Date(isoValue)
@@ -23,46 +20,25 @@ export function LogDetailPage() {
   const { id } = useParams()
   const logId = Number(id)
 
-  const [log, setLog] = useState<LogRecord | null>(null)
-  const [pipes, setPipes] = useState<PipeRecord[]>([])
-  const [photos, setPhotos] = useState<PhotoRecord[]>([])
+  const [log, setLog] = useState<SupabaseLog | null>(null)
+  const [groups, setGroups] = useState<Array<{ bundleId: number; bundleNumber: string; pipeNumbers: string[] }>>([])
+  const [photos, setPhotos] = useState<SupabasePhoto[]>([])
   const [photoKind, setPhotoKind] = useState<PhotoKind>('site')
-  const [selectedPipeId, setSelectedPipeId] = useState<string>('')
   const [newPhotoFile, setNewPhotoFile] = useState<File | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
 
-  const pipeById = useMemo(() => {
-    const map = new Map<number, PipeRecord>()
-    for (const pipe of pipes) {
-      if (typeof pipe.id === 'number') {
-        map.set(pipe.id, pipe)
-      }
-    }
-    return map
-  }, [pipes])
-
   const photoGridItems = useMemo<PhotoGridItem[]>(() => {
     return photos
-      .filter((photo): photo is PhotoRecord & { id: number } => typeof photo.id === 'number')
       .map((photo) => ({
         id: photo.id,
-        kind: photo.kind,
+        kind: photo.type,
         fileName: photo.file_name,
-        pipeNumber: typeof photo.pipe_id === 'number' ? pipeById.get(photo.pipe_id)?.pipe_number : undefined,
-        url: createPhotoObjectUrl(photo.blob),
+        url: getPhotoUrl(photo),
       }))
-  }, [photos, pipeById])
-
-  useEffect(() => {
-    return () => {
-      for (const photo of photoGridItems) {
-        URL.revokeObjectURL(photo.url)
-      }
-    }
-  }, [photoGridItems])
+  }, [photos])
 
   const loadData = async () => {
     if (!Number.isFinite(logId)) {
@@ -75,22 +51,22 @@ export function LogDetailPage() {
     setErrorMessage(null)
 
     try {
-      const [logRow, pipeRows, photoRows] = await Promise.all([
+      const [logRow, groupsRow, photoRows] = await Promise.all([
         getLogById(logId),
-        listPipesByLogId(logId),
-        listPhotosByLogId(logId),
+        getBundleGroupsForLog(logId),
+        getPhotosByLog(logId),
       ])
 
       if (!logRow) {
         setLog(null)
-        setPipes([])
+        setGroups([])
         setPhotos([])
         setErrorMessage('Log not found.')
         return
       }
 
       setLog(logRow)
-      setPipes(pipeRows)
+      setGroups(groupsRow)
       setPhotos(photoRows)
     } catch {
       setErrorMessage('Could not load log details.')
@@ -118,24 +94,16 @@ export function LogDetailPage() {
       return
     }
 
-    const parsedPipeId = selectedPipeId ? Number(selectedPipeId) : undefined
-    if (photoKind === 'pipe' && typeof parsedPipeId !== 'number') {
-      setErrorMessage('Select a pipe for pipe-type photo.')
-      return
-    }
-
     try {
       setIsSaving(true)
-      await savePhoto({
+      await uploadPhoto({
         logId,
         file: newPhotoFile,
-        kind: photoKind,
-        pipeId: photoKind === 'pipe' ? parsedPipeId : undefined,
+        type: photoKind,
       })
 
       setSuccessMessage('Photo saved.')
       setNewPhotoFile(null)
-      setSelectedPipeId('')
       await loadData()
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not save photo.'
@@ -162,11 +130,9 @@ export function LogDetailPage() {
   return (
     <section className="page">
       <h2>Log Detail</h2>
-      {log ? (
-        <p>
-          <Link to={`/bundle/${log.bundle_id}`}>Back to Bundle</Link>
-        </p>
-      ) : null}
+      <p>
+        <Link to="/">Back to Dashboard</Link>
+      </p>
 
       {isLoading ? <p className="muted">Loading log...</p> : null}
       {errorMessage ? <p className="message error">{errorMessage}</p> : null}
@@ -175,7 +141,6 @@ export function LogDetailPage() {
         <>
           <div className="card">
             <h3 className="card-title">Log {log.log_number}</h3>
-            <SyncStatusBadge status={log.sync_status} />
             <p className="muted">Pressure: {log.pressure_bar} bar</p>
             <p className="muted">Date: {formatDateTime(log.date_time)}</p>
             {log.notes ? <p>{log.notes}</p> : null}
@@ -185,50 +150,41 @@ export function LogDetailPage() {
           </div>
 
           <section className="group-section">
-            <h3>Pipes</h3>
-            <PipeList pipes={pipes.map((pipe) => pipe.pipe_number)} />
+            <h3>Pipes Grouped by Bundle</h3>
+            {groups.length === 0 ? <p className="muted">No pipes linked to this log.</p> : null}
+            <div className="card-grid">
+              {groups.map((group) => (
+                <article className="card" key={group.bundleId || group.bundleNumber}>
+                  <h4 className="card-title">Bundle {group.bundleNumber}</h4>
+                  <p className="muted">Pipes: {group.pipeNumbers.join(', ') || 'None'}</p>
+                </article>
+              ))}
+            </div>
           </section>
 
           <section className="group-section">
             <h3>Photos</h3>
             <PhotoGrid photos={photoGridItems} onDeletePhoto={onDeletePhoto} />
+            <div className="card-actions" style={{ marginTop: '0.75rem' }}>
+              <button type="button" className="button-danger" onClick={() => void deleteLog(logId)}>
+                Delete Log
+              </button>
+            </div>
           </section>
 
           <section className="group-section">
             <h3>Add Photo</h3>
             <form className="entry-form" onSubmit={onAddPhoto}>
-              <div className="field-row">
-                <div className="field-group">
-                  <label htmlFor="photoKind">Photo Type</label>
-                  <select
-                    id="photoKind"
-                    value={photoKind}
-                    onChange={(event) => setPhotoKind(event.target.value as PhotoKind)}
-                  >
-                    <option value="site">site</option>
-                    <option value="gauge">gauge</option>
-                    <option value="pipe">pipe</option>
-                  </select>
-                </div>
-
-                <div className="field-group">
-                  <label htmlFor="pipeSelect">Pipe (optional unless type is pipe)</label>
-                  <select
-                    id="pipeSelect"
-                    value={selectedPipeId}
-                    onChange={(event) => setSelectedPipeId(event.target.value)}
-                    disabled={pipes.length === 0}
-                  >
-                    <option value="">No specific pipe</option>
-                    {pipes
-                      .filter((pipe): pipe is PipeRecord & { id: number } => typeof pipe.id === 'number')
-                      .map((pipe) => (
-                        <option key={pipe.id} value={String(pipe.id)}>
-                          {pipe.pipe_number}
-                        </option>
-                      ))}
-                  </select>
-                </div>
+              <div className="field-group">
+                <label htmlFor="photoKind">Photo Type</label>
+                <select
+                  id="photoKind"
+                  value={photoKind}
+                  onChange={(event) => setPhotoKind(event.target.value as PhotoKind)}
+                >
+                  <option value="site">site</option>
+                  <option value="gauge">gauge</option>
+                </select>
               </div>
 
               <CameraCapture

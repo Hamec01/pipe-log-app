@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { db } from '../db/db'
-import type { SearchAllResult } from '../services/searchService'
-import { searchAll } from '../services/searchService'
+import type { SearchAllResult } from '../services/supabaseSearchService'
+import { searchAll } from '../services/supabaseSearchService'
 
 interface FilterState {
   pressureMin: string
@@ -46,23 +45,7 @@ export function DashboardPage() {
   const [filters, setFilters] = useState<FilterState>(INITIAL_FILTERS)
   const [results, setResults] = useState<SearchAllResult>({ bundles: [], logs: [], pipes: [] })
   const [isSearching, setIsSearching] = useState(false)
-  const [isResettingDb, setIsResettingDb] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
-
-  const resetDatabase = async () => {
-    const ok = confirm('Reset local database?')
-    if (!ok) {
-      return
-    }
-
-    try {
-      setIsResettingDb(true)
-      await db.delete()
-      window.location.reload()
-    } finally {
-      setIsResettingDb(false)
-    }
-  }
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -106,13 +89,7 @@ export function DashboardPage() {
   return (
     <section className="page">
       <h2>Dashboard</h2>
-      {import.meta.env.DEV ? (
-        <div className="card-actions" style={{ marginBottom: '0.75rem' }}>
-          <button type="button" className="button-danger" onClick={() => void resetDatabase()} disabled={isResettingDb}>
-            {isResettingDb ? 'Resetting...' : 'Reset Database'}
-          </button>
-        </div>
-      ) : null}
+
       <div className="field-group">
         <label htmlFor="globalSearch">Search</label>
         <input
@@ -181,7 +158,8 @@ export function DashboardPage() {
           {results.bundles.map((bundle) => (
             <article className="card" key={bundle.id}>
               <h4 className="card-title">Bundle {bundle.bundle_number}</h4>
-              <p className="muted">Logs: {bundle.logs_count}</p>
+              <p className="muted">Pipes: {bundle.pipes.map((pipe) => pipe.pipe_number).join(', ') || 'None'}</p>
+              <p className="muted">Logs: {bundle.logs.map((log) => log.log_number).join(', ') || 'None'}</p>
               <Link to={`/bundle/${bundle.id}`} className="button-link">Open</Link>
             </article>
           ))}
@@ -196,7 +174,9 @@ export function DashboardPage() {
             <article className="card" key={log.id}>
               <h4 className="card-title">{log.log_number} - {log.pressure_bar} bar</h4>
               <p className="muted">Date: {formatDateTime(log.date_time)}</p>
-              <p className="muted">Bundle: {log.bundle_number ?? 'Unknown'}</p>
+              <p className="muted">Bundles: {log.bundles.map((bundle) => bundle.bundle_number).join(', ') || 'None'}</p>
+              <p className="muted">Pipes: {log.pipes.map((pipe) => pipe.pipe_number).join(', ') || 'None'}</p>
+              <p className="muted">Photos: {log.photo_count}</p>
               <Link to={`/log/${log.id}`} className="button-link">Open Log</Link>
             </article>
           ))}
@@ -210,12 +190,12 @@ export function DashboardPage() {
           {results.pipes.map((pipe) => (
             <article className="card" key={pipe.id}>
               <h4 className="card-title">{pipe.pipe_number}</h4>
-              <p className="muted">Bundle: {pipe.bundle_number ?? 'Unknown'}</p>
-              {pipe.log_ids[0] ? (
-                <Link to={`/log/${pipe.log_ids[0]}`} className="button-link">Open Related Log</Link>
-              ) : (
-                <p className="muted">No linked logs</p>
-              )}
+              <p className="muted">Bundles: {pipe.bundles.map((bundle) => bundle.bundle_number).join(', ') || 'None'}</p>
+              <p className="muted">Logs: {pipe.logs.map((log) => log.log_number).join(', ') || 'None'}</p>
+              <p className="muted">Log Photos: {pipe.photos.map((photo) => `${photo.type}:${photo.file_name}`).join(', ') || 'None'}</p>
+              {pipe.logs[0] ? (
+                <Link to={`/log/${pipe.logs[0].id}`} className="button-link">Open Related Log</Link>
+              ) : null}
             </article>
           ))}
         </div>

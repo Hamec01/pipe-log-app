@@ -1,4 +1,5 @@
 import { db } from '../db/db'
+import type { BundleRecord, LogRecord, PhotoRecord, PipeRecord } from '../models/types'
 
 export interface SearchFilters {
   pressureMin?: number
@@ -7,30 +8,47 @@ export interface SearchFilters {
   dateToIso?: string
 }
 
+export interface LogRef {
+  id: number
+  log_number: string
+  pressure_bar: number
+  date_time: string
+}
+
+export interface BundleRef {
+  id: number
+  bundle_number: string
+}
+
+export interface PipeRef {
+  id: number
+  pipe_number: string
+  bundle?: BundleRef
+}
+
 export interface BundleSearchResult {
   id: number
   bundle_number: string
-  created_at: string
-  logs_count: number
+  pipes: PipeRef[]
+  logs: LogRef[]
 }
 
 export interface LogSearchResult {
   id: number
-  bundle_id: number
-  bundle_number?: string
   log_number: string
   pressure_bar: number
   date_time: string
-  pipe_count: number
+  bundles: BundleRef[]
+  pipes: PipeRef[]
   photo_count: number
 }
 
 export interface PipeSearchResult {
   id: number
-  bundle_id: number
-  bundle_number?: string
   pipe_number: string
-  log_ids: number[]
+  bundle?: BundleRef
+  logs: LogRef[]
+  photos: Array<{ id: number; type: PhotoRecord['type']; file_name: string }>
 }
 
 export interface SearchAllResult {
@@ -43,10 +61,7 @@ function normalizeQuery(query: string): string {
   return query.trim()
 }
 
-function applyLogRangeFilters<T extends { pressure_bar: number; date_time: string }>(
-  rows: T[],
-  filters?: SearchFilters,
-): T[] {
+function applyLogRangeFilters(rows: LogRecord[], filters?: SearchFilters): LogRecord[] {
   if (!filters) {
     return rows
   }
@@ -68,7 +83,6 @@ function applyLogRangeFilters<T extends { pressure_bar: number; date_time: strin
       if (typeof from === 'number' && !Number.isNaN(from) && rowTime < from) {
         return false
       }
-
       if (typeof to === 'number' && !Number.isNaN(to) && rowTime > to) {
         return false
       }
@@ -78,115 +92,215 @@ function applyLogRangeFilters<T extends { pressure_bar: number; date_time: strin
   })
 }
 
+async function getBundleById(bundleId: number): Promise<BundleRecord | undefined> {
+  return db.bundles.get(bundleId)
+}
+
+async function getBundleForPipe(pipeId: number): Promise<BundleRecord | undefined> {
+  const link = await db.bundle_pipes.where('pipe_id').equals(pipeId).first()
+  if (!link) {
+    return undefined
+  }
+  return getBundleById(link.bundle_id)
+}
+
+async function getPipesForLog(logId: number): Promise<PipeRecord[]> {
+  const links = await db.log_pipes.where('log_id').equals(logId).toArray()
+  if (links.length === 0) {
+    return []
+  }
+
+  const pipes = await db.pipes.bulkGet([...new Set(links.map((link) => link.pipe_id))])
+  return pipes.filter((pipe): pipe is PipeRecord => pipe != null)
+}
+
+async function getLogsForBundle(bundleId: number): Promise<LogRecord[]> {
+  const bundleLinks = await db.bundle_pipes.where('bundle_id').equals(bundleId).toArray()
+  if (bundleLinks.length === 0) {
+    return []
+  }
+
+  const pipeIds = [...new Set(bundleLinks.map((link) => link.pipe_id))]
+  const logLinks = await db.log_pipes.where('pipe_id').anyOf(pipeIds).toArray()
+  if (logLinks.length === 0) {
+    return []
+  }
+
+  const logs = await db.logs.bulkGet([...new Set(logLinks.map((link) => link.log_id))])
+  return logs.filter((log): log is LogRecord => log != null).sort((a, b) => b.date_time.localeCompare(a.date_time))
+}
+
+async function getBundlesForLog(logId: number): Promise<BundleRecord[]> {
+  const pipes = await getPipesForLog(logId)
+  const bundleIds = new Set<number>()
+
+  for (const pipe of pipes) {
+    if (typeof pipe.id !== 'number') {
+      continue
+    }
+    const link = await db.bundle_pipes.where('pipe_id').equals(pipe.id).first()
+    if (link) {
+      bundleIds.add(link.bundle_id)
+    }
+  }
+
+  const bundles = await db.bundles.bulkGet([...bundleIds])
+  return bundles
+    .filter((bundle): bundle is BundleRecord => bundle != null)
+    .sort((a, b) => a.bundle_number.localeCompare(b.bundle_number))
+}
+
+async function getLogsForPipe(pipeId: number): Promise<LogRecord[]> {
+  const links = await db.log_pipes.where('pipe_id').equals(pipeId).toArray()
+  if (links.length === 0) {
+    return []
+  }
+
+  const logs = await db.logs.bulkGet([...new Set(links.map((link) => link.log_id))])
+  return logs.filter((log): log is LogRecord => log != null).sort((a, b) => b.date_time.localeCompare(a.date_time))
+}
+
+function toLogRef(log: LogRecord): LogRef {
+  return {
+    id: log.id ?? 0,
+    log_number: log.log_number,
+    pressure_bar: log.pressure_bar,
+    date_time: log.date_time,
+  }
+}
+
+function toBundleRef(bundle: BundleRecord): BundleRef {
+  return {
+    id: bundle.id ?? 0,
+    bundle_number: bundle.bundle_number,
+  }
+}
+
 export async function searchBundles(query: string): Promise<BundleSearchResult[]> {
   const q = normalizeQuery(query)
+  if (!q) {
+    return []
+  }
 
-  const bundles = q
-    ? await db.bundles.where('bundle_number').startsWithIgnoreCase(q).toArray()
-    : []
+  const bundles = await db.bundles.where('bundle_number').startsWithIgnoreCase(q).toArray()
 
-  return Promise.all(
-    bundles
-      .filter((bundle) => !bundle.deleted_at)
-      .filter((bundle): bundle is typeof bundle & { id: number } => typeof bundle.id === 'number')
-      .map(async (bundle) => ({
-        id: bundle.id,
-        bundle_number: bundle.bundle_number,
-        created_at: bundle.created_at,
-        logs_count: await db.logs
-          .where('bundle_id')
-          .equals(bundle.id)
-          .toArray()
-          .then((rows) => rows.filter((row) => !row.deleted_at).length),
-      })),
-  )
+  const result: BundleSearchResult[] = []
+  for (const bundle of bundles) {
+    if (typeof bundle.id !== 'number') {
+      continue
+    }
+
+    const pipes = await db.bundle_pipes.where('bundle_id').equals(bundle.id).toArray()
+    const pipeRows = await db.pipes.bulkGet([...new Set(pipes.map((row) => row.pipe_id))])
+    const logs = await getLogsForBundle(bundle.id)
+
+    result.push({
+      id: bundle.id,
+      bundle_number: bundle.bundle_number,
+      pipes: pipeRows
+        .filter((pipe): pipe is PipeRecord => pipe != null)
+        .sort((a, b) => a.pipe_number.localeCompare(b.pipe_number))
+        .map((pipe) => ({ id: pipe.id ?? 0, pipe_number: pipe.pipe_number, bundle: toBundleRef(bundle) })),
+      logs: logs.map(toLogRef),
+    })
+  }
+
+  return result
 }
 
 export async function searchLogs(query: string, filters?: SearchFilters): Promise<LogSearchResult[]> {
   const q = normalizeQuery(query)
 
-  const baseLogs = q
-    ? await db.logs.where('log_number').startsWithIgnoreCase(q).toArray()
-    : await db.logs.toArray()
+  const baseLogs = q ? await db.logs.where('log_number').startsWithIgnoreCase(q).toArray() : await db.logs.toArray()
+  const logs = applyLogRangeFilters(baseLogs, filters)
 
-  const logs = applyLogRangeFilters(baseLogs, filters).filter((log) => !log.deleted_at)
-
-  const bundles = await db.bundles.toArray()
-  const bundleById = new Map<number, string>()
-  for (const bundle of bundles) {
-    if (typeof bundle.id === 'number' && !bundle.deleted_at) {
-      bundleById.set(bundle.id, bundle.bundle_number)
+  const result: LogSearchResult[] = []
+  for (const log of logs) {
+    if (typeof log.id !== 'number') {
+      continue
     }
+
+    const bundles = await getBundlesForLog(log.id)
+    const pipes = await getPipesForLog(log.id)
+    const photos = await db.photos.where('log_id').equals(log.id).toArray()
+
+    const pipesWithBundles: PipeRef[] = []
+    for (const pipe of pipes) {
+      if (typeof pipe.id !== 'number') {
+        continue
+      }
+      const bundle = await getBundleForPipe(pipe.id)
+      pipesWithBundles.push({
+        id: pipe.id,
+        pipe_number: pipe.pipe_number,
+        bundle: bundle ? toBundleRef(bundle) : undefined,
+      })
+    }
+
+    result.push({
+      id: log.id,
+      log_number: log.log_number,
+      pressure_bar: log.pressure_bar,
+      date_time: log.date_time,
+      bundles: bundles.map(toBundleRef),
+      pipes: pipesWithBundles.sort((a, b) => a.pipe_number.localeCompare(b.pipe_number)),
+      photo_count: photos.length,
+    })
   }
 
-  return Promise.all(
-    logs
-      .filter((log): log is typeof log & { id: number } => typeof log.id === 'number')
-      .map(async (log) => ({
-        id: log.id,
-        bundle_id: log.bundle_id,
-        bundle_number: bundleById.get(log.bundle_id),
-        log_number: log.log_number,
-        pressure_bar: log.pressure_bar,
-        date_time: log.date_time,
-        pipe_count: await db.log_pipes
-          .where('log_id')
-          .equals(log.id)
-          .toArray()
-          .then((rows) => rows.filter((row) => !row.deleted_at).length),
-        photo_count: await db.photos
-          .where('log_id')
-          .equals(log.id)
-          .toArray()
-          .then((rows) => rows.filter((row) => !row.deleted_at).length),
-      })),
-  )
+  return result.sort((a, b) => b.date_time.localeCompare(a.date_time))
 }
 
 export async function searchPipes(query: string): Promise<PipeSearchResult[]> {
   const q = normalizeQuery(query)
-
-  const pipes = q
-    ? await db.pipes.where('pipe_number').startsWithIgnoreCase(q).toArray()
-    : []
-
-  const bundles = await db.bundles.toArray()
-  const bundleById = new Map<number, string>()
-  for (const bundle of bundles) {
-    if (typeof bundle.id === 'number' && !bundle.deleted_at) {
-      bundleById.set(bundle.id, bundle.bundle_number)
-    }
+  if (!q) {
+    return []
   }
 
-  return Promise.all(
-    pipes
-      .filter((pipe) => !pipe.deleted_at)
-      .filter((pipe): pipe is typeof pipe & { id: number } => typeof pipe.id === 'number')
-      .map(async (pipe) => {
-        const links = (await db.log_pipes.where('pipe_id').equals(pipe.id).toArray()).filter((link) => !link.deleted_at)
-        return {
-          id: pipe.id,
-          bundle_id: pipe.bundle_id,
-          bundle_number: bundleById.get(pipe.bundle_id),
-          pipe_number: pipe.pipe_number,
-          log_ids: links.map((link) => link.log_id),
+  const pipes = await db.pipes.where('pipe_number').startsWithIgnoreCase(q).toArray()
+
+  const result: PipeSearchResult[] = []
+  for (const pipe of pipes) {
+    if (typeof pipe.id !== 'number') {
+      continue
+    }
+
+    const bundle = await getBundleForPipe(pipe.id)
+    const logs = await getLogsForPipe(pipe.id)
+    const photos: Array<{ id: number; type: PhotoRecord['type']; file_name: string }> = []
+
+    for (const log of logs) {
+      if (typeof log.id !== 'number') {
+        continue
+      }
+
+      const logPhotos = await db.photos.where('log_id').equals(log.id).toArray()
+      for (const photo of logPhotos) {
+        if (typeof photo.id !== 'number') {
+          continue
         }
-      }),
-  )
+        photos.push({ id: photo.id, type: photo.type, file_name: photo.file_name })
+      }
+    }
+
+    result.push({
+      id: pipe.id,
+      pipe_number: pipe.pipe_number,
+      bundle: bundle ? toBundleRef(bundle) : undefined,
+      logs: logs.map(toLogRef),
+      photos,
+    })
+  }
+
+  return result.sort((a, b) => a.pipe_number.localeCompare(b.pipe_number))
 }
 
 export async function searchAll(query: string, filters?: SearchFilters): Promise<SearchAllResult> {
-  const q = normalizeQuery(query)
-
   const [bundles, logs, pipes] = await Promise.all([
-    searchBundles(q),
-    searchLogs(q, filters),
-    searchPipes(q),
+    searchBundles(query),
+    searchLogs(query, filters),
+    searchPipes(query),
   ])
 
-  return {
-    bundles,
-    logs,
-    pipes,
-  }
+  return { bundles, logs, pipes }
 }

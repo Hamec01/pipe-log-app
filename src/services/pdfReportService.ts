@@ -1,5 +1,6 @@
 import { jsPDF } from 'jspdf'
 import { db } from '../db/db'
+import { listBundlePipeGroupsByLogId } from './pipeService'
 
 function sanitizeFileName(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]+/g, '_')
@@ -16,19 +17,12 @@ function blobToDataUrl(blob: Blob): Promise<string> {
 
 export async function generateLogPdf(logId: number): Promise<string> {
   const log = await db.logs.get(logId)
-  if (!log || log.deleted_at) {
+  if (!log) {
     throw new Error('Log not found.')
   }
 
-  const bundle = await db.bundles.get(log.bundle_id)
-  if (!bundle || bundle.deleted_at) {
-    throw new Error('Bundle not found for log.')
-  }
-
-  const links = (await db.log_pipes.where('log_id').equals(logId).toArray()).filter((item) => !item.deleted_at)
-  const pipeIds = links.map((item) => item.pipe_id)
-  const pipes = (await db.pipes.bulkGet(pipeIds)).filter((item): item is NonNullable<typeof item> => item != null && !item.deleted_at)
-  const photos = (await db.photos.where('log_id').equals(logId).toArray()).filter((item) => !item.deleted_at)
+  const groups = await listBundlePipeGroupsByLogId(logId)
+  const photos = await db.photos.where('log_id').equals(logId).toArray()
 
   const doc = new jsPDF({ unit: 'mm', format: 'a4' })
   const pageWidth = doc.internal.pageSize.getWidth()
@@ -41,15 +35,11 @@ export async function generateLogPdf(logId: number): Promise<string> {
   y += 8
 
   doc.setFontSize(11)
-  doc.text(`Bundle: ${bundle.bundle_number}`, 14, y)
-  y += 6
   doc.text(`Log: ${log.log_number}`, 14, y)
   y += 6
   doc.text(`Date: ${new Date(log.date_time).toLocaleString()}`, 14, y)
   y += 6
   doc.text(`Pressure: ${log.pressure_bar} bar`, 14, y)
-  y += 6
-  doc.text(`Sync status: ${log.sync_status}`, 14, y)
   y += 8
 
   if (log.notes) {
@@ -60,25 +50,36 @@ export async function generateLogPdf(logId: number): Promise<string> {
   }
 
   doc.setFontSize(12)
-  doc.text('Pipes', 14, y)
+  doc.text('Bundle and Pipe Groups', 14, y)
   y += 6
-  doc.setFontSize(10)
 
-  if (pipes.length === 0) {
-    doc.text('No linked pipes.', 14, y)
+  if (groups.length === 0) {
+    doc.setFontSize(10)
+    doc.text('No bundle/pipe links for this log.', 14, y)
     y += 6
   } else {
-    for (const pipe of pipes) {
-      if (y > pageHeight - 12) {
+    for (const group of groups) {
+      if (y > pageHeight - 20) {
         doc.addPage()
         y = 16
       }
-      doc.text(`- ${pipe.pipe_number}`, 16, y)
+
+      doc.setFontSize(11)
+      doc.text(`Bundle ${group.bundle.bundle_number}`, 14, y)
       y += 5
+      doc.setFontSize(10)
+      for (const pipe of group.pipes) {
+        if (y > pageHeight - 14) {
+          doc.addPage()
+          y = 16
+        }
+        doc.text(`- ${pipe.pipe_number}`, 18, y)
+        y += 4
+      }
+      y += 2
     }
   }
 
-  y += 4
   doc.setFontSize(12)
   doc.text('Photos', 14, y)
   y += 6
@@ -94,8 +95,7 @@ export async function generateLogPdf(logId: number): Promise<string> {
       }
 
       doc.setFontSize(10)
-      const label = `${photo.kind.toUpperCase()} - ${photo.file_name}`
-      doc.text(label, 14, y)
+      doc.text(`${photo.kind.toUpperCase()} - ${photo.file_name}`, 14, y)
       y += 4
 
       try {
@@ -110,7 +110,7 @@ export async function generateLogPdf(logId: number): Promise<string> {
     }
   }
 
-  const fileName = `report_bundle_${sanitizeFileName(bundle.bundle_number)}_log_${sanitizeFileName(log.log_number)}.pdf`
+  const fileName = `report_log_${sanitizeFileName(log.log_number)}.pdf`
   doc.save(fileName)
   return fileName
 }

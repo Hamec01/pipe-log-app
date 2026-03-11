@@ -1,5 +1,6 @@
 import { db } from '../db/db'
-import type { BundleRecord } from '../models/types'
+import type { BundleRecord, LogRecord, PipeRecord } from '../models/types'
+import { listPipesByBundleId } from './pipeService'
 
 export interface BundleSummary {
   bundle: BundleRecord
@@ -16,20 +17,16 @@ export async function createBundle(bundleNumber: string): Promise<BundleRecord> 
     throw new Error('Bundle number is required.')
   }
 
-  const createdId = await db.bundles.add({
+  const id = await db.bundles.add({
     bundle_number: normalized,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     sync_status: 'local',
   })
 
-  if (typeof createdId !== 'number') {
-    throw new Error('Could not create bundle.')
-  }
-
-  const created = await db.bundles.get(createdId)
+  const created = await db.bundles.get(id)
   if (!created) {
-    throw new Error('Could not load created bundle.')
+    throw new Error('Could not create bundle.')
   }
 
   return created
@@ -69,6 +66,29 @@ export async function getAllBundles(): Promise<BundleRecord[]> {
   return listBundles()
 }
 
+export async function getLogsByBundle(bundleId: number): Promise<LogRecord[]> {
+  const bundleLinks = await db.bundle_pipes.where('bundle_id').equals(bundleId).toArray()
+  if (bundleLinks.length === 0) {
+    return []
+  }
+
+  const pipeIds = [...new Set(bundleLinks.map((link) => link.pipe_id))]
+  const logLinks = await db.log_pipes.where('pipe_id').anyOf(pipeIds).toArray()
+  const logIds = [...new Set(logLinks.map((link) => link.log_id))]
+  if (logIds.length === 0) {
+    return []
+  }
+
+  const logs = await db.logs.bulkGet(logIds)
+  return logs
+    .filter((log): log is LogRecord => log != null)
+    .sort((a, b) => b.date_time.localeCompare(a.date_time))
+}
+
+export async function getPipesByBundle(bundleId: number): Promise<PipeRecord[]> {
+  return listPipesByBundleId(bundleId)
+}
+
 export async function updateBundle(bundleId: number, patch: Partial<Pick<BundleRecord, 'bundle_number'>>): Promise<BundleRecord> {
   const current = await db.bundles.get(bundleId)
   if (!current) {
@@ -95,25 +115,8 @@ export async function updateBundle(bundleId: number, patch: Partial<Pick<BundleR
 }
 
 export async function deleteBundle(bundleId: number): Promise<void> {
-  await db.transaction('rw', [db.bundles, db.logs, db.pipes, db.log_pipes, db.photos, db.photo_pipes], async () => {
-    const logs = await db.logs.where('bundle_id').equals(bundleId).toArray()
-    const logIds = logs.map((log) => log.id).filter((id): id is number => typeof id === 'number')
-
-    if (logIds.length > 0) {
-      const photos = await db.photos.where('log_id').anyOf(logIds).toArray()
-      const photoIds = photos.map((photo) => photo.id).filter((id): id is number => typeof id === 'number')
-
-      await db.log_pipes.where('log_id').anyOf(logIds).delete()
-      await db.photos.where('log_id').anyOf(logIds).delete()
-
-      if (photoIds.length > 0) {
-        await db.photo_pipes.where('photo_id').anyOf(photoIds).delete()
-      }
-
-      await db.logs.where('bundle_id').equals(bundleId).delete()
-    }
-
-    await db.pipes.where('bundle_id').equals(bundleId).delete()
+  await db.transaction('rw', db.bundles, db.bundle_pipes, async () => {
+    await db.bundle_pipes.where('bundle_id').equals(bundleId).delete()
     await db.bundles.delete(bundleId)
   })
 }
@@ -123,13 +126,12 @@ export async function listBundleSummaries(): Promise<BundleSummary[]> {
 
   return Promise.all(
     bundles.map(async (bundle) => {
-      const bundleId = bundle.id
-      if (typeof bundleId !== 'number') {
+      if (typeof bundle.id !== 'number') {
         return { bundle, logsCount: 0 }
       }
 
-      const logsCount = await db.logs.where('bundle_id').equals(bundleId).count()
-      return { bundle, logsCount }
+      const logs = await getLogsByBundle(bundle.id)
+      return { bundle, logsCount: logs.length }
     }),
   )
 }

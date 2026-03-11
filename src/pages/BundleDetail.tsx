@@ -1,37 +1,21 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ExportBundleButton } from '../components/ExportBundleButton'
-import { LogCard } from '../components/LogCard'
-import type { BundleRecord } from '../models/types'
-import { getBundleById } from '../services/bundleService'
-import { deleteLog, getLogsByBundle } from '../services/logService'
-import { listPhotosByLogId } from '../services/photoService'
-import { listPipesByLogId } from '../services/pipeService'
+import {
+  getBundleById,
+  listBundleLogs,
+  listBundlePipes,
+  type SupabaseBundle,
+  type SupabaseLogSummary,
+} from '../services/supabaseBundleService'
+import { deleteLog } from '../services/supabaseLogService'
+import { getPhotosByLog } from '../services/supabasePhotoService'
+import { listPipesByLog } from '../services/supabasePipeService'
 
 interface LogCardView {
-  id: number
-  logNumber: string
-  pressureBar: number
-  dateTime: string
-  notes?: string
-  createdAt: string
-  updatedAt: string
-  syncStatus: 'local' | 'synced' | 'modified' | 'deleted'
+  log: SupabaseLogSummary
   pipeCount: number
   photoCount: number
-}
-
-type GroupedLogs = Record<string, LogCardView[]>
-
-function groupByDate(logs: LogCardView[]): GroupedLogs {
-  const groups: GroupedLogs = {}
-  for (const log of logs) {
-    const day = log.dateTime.split('T')[0] || 'Unknown'
-    const list = groups[day] ?? []
-    list.push(log)
-    groups[day] = list
-  }
-  return groups
 }
 
 export function BundleDetailPage() {
@@ -39,7 +23,8 @@ export function BundleDetailPage() {
   const navigate = useNavigate()
   const bundleId = Number(id)
 
-  const [bundle, setBundle] = useState<BundleRecord | null>(null)
+  const [bundle, setBundle] = useState<SupabaseBundle | null>(null)
+  const [bundlePipes, setBundlePipes] = useState<Array<{ id: number; pipe_number: string }>>([])
   const [logs, setLogs] = useState<LogCardView[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -58,39 +43,31 @@ export function BundleDetailPage() {
       const bundleRow = await getBundleById(bundleId)
       if (!bundleRow) {
         setBundle(null)
+        setBundlePipes([])
         setLogs([])
         setErrorMessage('Bundle not found.')
         return
       }
 
-      const logRows = await getLogsByBundle(bundleId)
-      const views: LogCardView[] = []
+      const [pipes, logRows] = await Promise.all([listBundlePipes(bundleId), listBundleLogs(bundleId)])
 
+      const views: LogCardView[] = []
       for (const log of logRows) {
         if (typeof log.id !== 'number') {
           continue
         }
 
-        const [pipes, photos] = await Promise.all([
-          listPipesByLogId(log.id),
-          listPhotosByLogId(log.id),
-        ])
+        const [linkedPipes, photos] = await Promise.all([listPipesByLog(log.id), getPhotosByLog(log.id)])
 
         views.push({
-          id: log.id,
-          logNumber: log.log_number,
-          pressureBar: log.pressure_bar,
-          dateTime: log.date_time,
-          notes: log.notes,
-          createdAt: log.created_at,
-          updatedAt: log.updated_at,
-          syncStatus: log.sync_status,
-          pipeCount: pipes.length,
+          log,
+          pipeCount: linkedPipes.length,
           photoCount: photos.length,
         })
       }
 
       setBundle(bundleRow)
+      setBundlePipes(pipes)
       setLogs(views)
     } catch {
       setErrorMessage('Could not load bundle details.')
@@ -102,9 +79,6 @@ export function BundleDetailPage() {
   useEffect(() => {
     void loadBundle()
   }, [bundleId])
-
-  const groupedLogs = useMemo(() => groupByDate(logs), [logs])
-  const orderedDays = useMemo(() => Object.keys(groupedLogs).sort((a, b) => b.localeCompare(a)), [groupedLogs])
 
   const onDeleteLog = async (logId: number) => {
     const ok = confirm('Are you sure you want to delete this item?')
@@ -137,38 +111,42 @@ export function BundleDetailPage() {
             <button type="button" onClick={() => navigate('/create-log')}>Create Log</button>
           </div>
           {typeof bundle.id === 'number' ? <ExportBundleButton bundleId={bundle.id} /> : null}
+
+          <section className="group-section">
+            <h3>Pipes in Bundle</h3>
+            {bundlePipes.length === 0 ? <p className="muted">No pipes linked to this bundle yet.</p> : null}
+            <div className="card-grid">
+              {bundlePipes.map((pipe) => (
+                <article key={pipe.id ?? pipe.pipe_number} className="card">
+                  <h4 className="card-title">{pipe.pipe_number}</h4>
+                </article>
+              ))}
+            </div>
+          </section>
         </>
       ) : null}
 
-      {!isLoading && !errorMessage && logs.length === 0 ? <p className="muted">This bundle has no logs yet.</p> : null}
-
-      {orderedDays.map((day) => (
-        <section key={day} className="group-section">
-          <h3>{day}</h3>
-          <div className="card-grid">
-            {groupedLogs[day].map((log) => (
-              <LogCard
-                key={log.id}
-                log={{
-                  id: log.id,
-                  bundle_id: bundleId,
-                  log_number: log.logNumber,
-                  pressure_bar: log.pressureBar,
-                  date_time: log.dateTime,
-                  notes: log.notes,
-                  created_at: log.createdAt,
-                  updated_at: log.updatedAt,
-                  deleted_at: null,
-                  sync_status: log.syncStatus,
-                }}
-                pipesCount={log.pipeCount}
-                photosCount={log.photoCount}
-                onDelete={onDeleteLog}
-              />
-            ))}
-          </div>
-        </section>
-      ))}
+      <section className="group-section">
+        <h3>Related Logs</h3>
+        {!isLoading && !errorMessage && logs.length === 0 ? <p className="muted">This bundle has no related logs yet.</p> : null}
+        <div className="card-grid">
+          {logs.map((item) => (
+            <article key={item.log.id} className="card">
+              <h4 className="card-title">Log {item.log.log_number}</h4>
+              <p className="muted">Pressure: {item.log.pressure_bar} bar</p>
+              <p className="muted">Date: {new Date(item.log.date_time).toLocaleString()}</p>
+              <p className="muted">Pipes: {item.pipeCount} | Photos: {item.photoCount}</p>
+              {item.log.notes ? <p>{item.log.notes}</p> : null}
+              <div className="card-actions">
+                <Link to={`/log/${item.log.id}`} className="button-link">Open Log</Link>
+                <button type="button" className="button-danger" onClick={() => void onDeleteLog(item.log.id)}>
+                  Delete Log
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
     </section>
   )
 }

@@ -1,31 +1,26 @@
 import { db } from '../db/db'
-import type { LogPipeRecord, PipeRecord } from '../models/types'
+import type { BundleRecord, LogPipeRecord, PipeRecord } from '../models/types'
 
 function normalizePipeNumber(pipeNumber: string): string {
   return pipeNumber.trim()
 }
 
-export async function createPipe(bundleId: number, pipeNumber: string): Promise<PipeRecord> {
+export async function createPipe(pipeNumber: string): Promise<PipeRecord> {
   const normalized = normalizePipeNumber(pipeNumber)
   if (!normalized) {
     throw new Error('Pipe number is required.')
   }
 
   const id = await db.pipes.add({
-    bundle_id: bundleId,
     pipe_number: normalized,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     sync_status: 'local',
   })
 
-  if (typeof id !== 'number') {
-    throw new Error('Could not create pipe.')
-  }
-
   const created = await db.pipes.get(id)
   if (!created) {
-    throw new Error('Could not load created pipe.')
+    throw new Error('Could not create pipe.')
   }
 
   return created
@@ -35,100 +30,100 @@ export async function getPipeById(pipeId: number): Promise<PipeRecord | undefine
   return db.pipes.get(pipeId)
 }
 
-export async function getPipeByNumberAndBundle(bundleId: number, pipeNumber: string): Promise<PipeRecord | undefined> {
+export async function getPipeByNumber(pipeNumber: string): Promise<PipeRecord | undefined> {
   const normalized = normalizePipeNumber(pipeNumber)
   if (!normalized) {
     return undefined
   }
 
-  return db.pipes
-    .where('[bundle_id+pipe_number]')
-    .equals([bundleId, normalized])
-    .first()
+  return db.pipes.where('pipe_number').equals(normalized).first()
 }
 
-export async function createPipeIfNotExists(bundleId: number, pipeNumber: string): Promise<PipeRecord> {
-  const existing = await getPipeByNumberAndBundle(bundleId, pipeNumber)
+export async function createPipeIfNotExists(pipeNumber: string): Promise<PipeRecord> {
+  const existing = await getPipeByNumber(pipeNumber)
   if (existing) {
     return existing
   }
 
-  return createPipe(bundleId, pipeNumber)
+  return createPipe(pipeNumber)
 }
 
-export async function getOrCreatePipes(bundleId: number, pipeNumbers: string[]): Promise<PipeRecord[]> {
-  const unique = new Set(
-    pipeNumbers
-      .map((value) => normalizePipeNumber(value))
-      .filter((value) => value.length > 0),
-  )
-
-  const result: PipeRecord[] = []
-  for (const pipeNumber of unique) {
-    const pipe = await createPipeIfNotExists(bundleId, pipeNumber)
-    result.push(pipe)
+export async function linkPipeToBundle(bundleId: number, pipeId: number): Promise<void> {
+  const existing = await db.bundle_pipes.where('[bundle_id+pipe_id]').equals([bundleId, pipeId]).first()
+  if (existing) {
+    return
   }
 
-  return result
+  await db.bundle_pipes.add({
+    bundle_id: bundleId,
+    pipe_id: pipeId,
+    created_at: new Date().toISOString(),
+    sync_status: 'local',
+  })
+}
+
+export async function getOrCreatePipeForBundle(bundleId: number, pipeNumber: string): Promise<PipeRecord> {
+  const pipe = await createPipeIfNotExists(pipeNumber)
+  if (typeof pipe.id !== 'number') {
+    throw new Error('Pipe ID is missing.')
+  }
+
+  const existingLinks = await db.bundle_pipes.where('pipe_id').equals(pipe.id).toArray()
+  const linkedBundleIds = new Set(existingLinks.map((row) => row.bundle_id))
+
+  if (linkedBundleIds.size > 0 && !linkedBundleIds.has(bundleId)) {
+    throw new Error(`Pipe ${pipe.pipe_number} is already linked to another bundle.`)
+  }
+
+  await linkPipeToBundle(bundleId, pipe.id)
+  return pipe
 }
 
 export async function listPipesByBundleId(bundleId: number): Promise<PipeRecord[]> {
-  return db.pipes.where('bundle_id').equals(bundleId).sortBy('pipe_number')
-}
-
-export async function listPipesByLogId(logId: number): Promise<PipeRecord[]> {
-  const links = await listLogPipeLinksByLogId(logId)
+  const links = await db.bundle_pipes.where('bundle_id').equals(bundleId).toArray()
   if (links.length === 0) {
     return []
   }
 
-  const pipeIds = links.map((link) => link.pipe_id)
-  const rows = await db.pipes.bulkGet(pipeIds)
-
-  return rows
-    .filter((row): row is PipeRecord => row != null)
-    .sort((a, b) => a.pipe_number.localeCompare(b.pipe_number))
+  const ids = links.map((link) => link.pipe_id)
+  const pipes = await db.pipes.bulkGet(ids)
+  return pipes.filter((pipe): pipe is PipeRecord => pipe != null).sort((a, b) => a.pipe_number.localeCompare(b.pipe_number))
 }
 
-export async function updatePipe(pipeId: number, patch: Partial<Pick<PipeRecord, 'pipe_number'>>): Promise<PipeRecord> {
-  const current = await db.pipes.get(pipeId)
-  if (!current) {
-    throw new Error('Pipe not found.')
+export async function listPipesByLogId(logId: number): Promise<PipeRecord[]> {
+  const links = await db.log_pipes.where('log_id').equals(logId).toArray()
+  if (links.length === 0) {
+    return []
   }
 
-  const nextPipeNumber = patch.pipe_number ? normalizePipeNumber(patch.pipe_number) : current.pipe_number
-  if (!nextPipeNumber) {
-    throw new Error('Pipe number is required.')
-  }
-
-  await db.pipes.update(pipeId, {
-    pipe_number: nextPipeNumber,
-    updated_at: new Date().toISOString(),
-    sync_status: 'modified',
-  })
-
-  const updated = await db.pipes.get(pipeId)
-  if (!updated) {
-    throw new Error('Could not update pipe.')
-  }
-
-  return updated
+  const ids = [...new Set(links.map((link) => link.pipe_id))]
+  const pipes = await db.pipes.bulkGet(ids)
+  return pipes.filter((pipe): pipe is PipeRecord => pipe != null).sort((a, b) => a.pipe_number.localeCompare(b.pipe_number))
 }
 
-export async function deletePipe(pipeId: number): Promise<void> {
-  await db.transaction('rw', db.pipes, db.log_pipes, db.photo_pipes, async () => {
-    await db.log_pipes.where('pipe_id').equals(pipeId).delete()
-    await db.photo_pipes.where('pipe_id').equals(pipeId).delete()
-    await db.pipes.delete(pipeId)
-  })
+export async function getBundleByPipeId(pipeId: number): Promise<BundleRecord | undefined> {
+  const link = await db.bundle_pipes.where('pipe_id').equals(pipeId).first()
+  if (!link) {
+    return undefined
+  }
+
+  return db.bundles.get(link.bundle_id)
+}
+
+export async function listBundlesByPipeId(pipeId: number): Promise<BundleRecord[]> {
+  const links = await db.bundle_pipes.where('pipe_id').equals(pipeId).toArray()
+  if (links.length === 0) {
+    return []
+  }
+
+  const bundles = await db.bundles.bulkGet(links.map((row) => row.bundle_id))
+  return bundles
+    .filter((bundle): bundle is BundleRecord => bundle != null)
+    .sort((a, b) => a.bundle_number.localeCompare(b.bundle_number))
 }
 
 export async function linkPipeToLog(logId: number, pipeId: number): Promise<LogPipeRecord> {
-  const existing = await db.log_pipes
-    .where('[log_id+pipe_id]')
-    .equals([logId, pipeId])
-    .first()
-
+  const existing = await db.log_pipes.where('[log_id+pipe_id]').equals([logId, pipeId]).first()
   if (existing) {
     return existing
   }
@@ -140,25 +135,20 @@ export async function linkPipeToLog(logId: number, pipeId: number): Promise<LogP
     sync_status: 'local',
   })
 
-  if (typeof id !== 'number') {
-    throw new Error('Could not link pipe to log.')
-  }
-
   const created = await db.log_pipes.get(id)
   if (!created) {
-    throw new Error('Could not load created log-pipe link.')
+    throw new Error('Could not link pipe to log.')
   }
 
   return created
 }
 
 export async function linkMultiplePipesToLog(logId: number, pipeIds: number[]): Promise<LogPipeRecord[]> {
+  const unique = [...new Set(pipeIds)]
   const result: LogPipeRecord[] = []
-  const uniquePipeIds = [...new Set(pipeIds)]
 
-  for (const pipeId of uniquePipeIds) {
-    const link = await linkPipeToLog(logId, pipeId)
-    result.push(link)
+  for (const pipeId of unique) {
+    result.push(await linkPipeToLog(logId, pipeId))
   }
 
   return result
@@ -168,19 +158,43 @@ export async function listLogPipeLinksByLogId(logId: number): Promise<LogPipeRec
   return db.log_pipes.where('log_id').equals(logId).toArray()
 }
 
-export async function unlinkPipeFromLog(logId: number, pipeId: number): Promise<void> {
-  const links = await db.log_pipes
-    .where('[log_id+pipe_id]')
-    .equals([logId, pipeId])
-    .toArray()
-
-  for (const link of links) {
-    if (typeof link.id === 'number') {
-      await db.log_pipes.delete(link.id)
-    }
-  }
+export async function listLogsByPipeId(pipeId: number): Promise<number[]> {
+  const links = await db.log_pipes.where('pipe_id').equals(pipeId).toArray()
+  return [...new Set(links.map((link) => link.log_id))]
 }
 
-export async function clearLogPipeLinks(logId: number): Promise<void> {
-  await db.log_pipes.where('log_id').equals(logId).delete()
+export async function listBundlePipeGroupsByLogId(logId: number): Promise<Array<{ bundle: BundleRecord; pipes: PipeRecord[] }>> {
+  const pipes = await listPipesByLogId(logId)
+  const grouped = new Map<number, PipeRecord[]>()
+
+  for (const pipe of pipes) {
+    if (typeof pipe.id !== 'number') {
+      continue
+    }
+
+    const bundles = await listBundlesByPipeId(pipe.id)
+    const primaryBundle = bundles[0]
+    if (!primaryBundle?.id) {
+      continue
+    }
+
+    const list = grouped.get(primaryBundle.id) ?? []
+    list.push(pipe)
+    grouped.set(primaryBundle.id, list)
+  }
+
+  const result: Array<{ bundle: BundleRecord; pipes: PipeRecord[] }> = []
+  for (const [bundleId, groupedPipes] of grouped) {
+    const bundle = await db.bundles.get(bundleId)
+    if (!bundle) {
+      continue
+    }
+
+    result.push({
+      bundle,
+      pipes: groupedPipes.sort((a, b) => a.pipe_number.localeCompare(b.pipe_number)),
+    })
+  }
+
+  return result.sort((a, b) => a.bundle.bundle_number.localeCompare(b.bundle.bundle_number))
 }

@@ -1,35 +1,39 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { BundlePipeGroupEditor, type BundlePipeGroupDraft } from '../components/BundlePipeGroupEditor'
 import { CameraCapture } from '../components/CameraCapture'
-import { PipeList } from '../components/PipeList'
-import type { BundleRecord } from '../models/types'
-import { db } from '../db/db'
-import { getOrCreateBundleByNumber, listBundles } from '../services/bundleService'
-import { createLogWithPipesAndPhotos } from '../services/logService'
+import type { SupabaseBundle } from '../services/supabaseBundleService'
+import { listBundles } from '../services/supabaseBundleService'
+import { createLogWithBundleGroupsAndPhotos } from '../services/supabaseLogService'
 import { extractPressureFromImage } from '../services/ocrService'
 import { dateTimeLocalToIso, nowDateTimeLocalValue } from '../utils/date'
 import { parsePipeNumbers } from '../utils/pipeParser'
 
 interface FormState {
-  bundleNumber: string
   logNumber: string
   pressureBar: string
   dateTimeLocal: string
   notes: string
-  pipesRaw: string
 }
 
 const INITIAL_FORM: FormState = {
-  bundleNumber: '',
   logNumber: '',
   pressureBar: '',
   dateTimeLocal: nowDateTimeLocalValue(),
   notes: '',
-  pipesRaw: '',
+}
+
+function createEmptyGroup(): BundlePipeGroupDraft {
+  return {
+    id: crypto.randomUUID(),
+    bundleNumber: '',
+    pipesRaw: '',
+  }
 }
 
 export function CreateLogPage() {
   const [form, setForm] = useState<FormState>(INITIAL_FORM)
-  const [bundles, setBundles] = useState<BundleRecord[]>([])
+  const [groups, setGroups] = useState<BundlePipeGroupDraft[]>([createEmptyGroup()])
+  const [bundles, setBundles] = useState<SupabaseBundle[]>([])
   const [gaugePhotoFile, setGaugePhotoFile] = useState<File | null>(null)
   const [sitePhotoFile, setSitePhotoFile] = useState<File | null>(null)
   const [isDetectingPressure, setIsDetectingPressure] = useState(false)
@@ -39,7 +43,7 @@ export function CreateLogPage() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const ocrRequestRef = useRef(0)
 
-  const parsedPipes = useMemo(() => parsePipeNumbers(form.pipesRaw), [form.pipesRaw])
+  const bundleSuggestions = useMemo(() => bundles.map((bundle) => bundle.bundle_number), [bundles])
 
   useEffect(() => {
     const loadBundles = async () => {
@@ -58,25 +62,30 @@ export function CreateLogPage() {
     setForm((prev) => ({ ...prev, [field]: value }))
   }
 
-  const resetForm = () => {
-    setForm({
-      ...INITIAL_FORM,
-      dateTimeLocal: nowDateTimeLocalValue(),
+  const updateGroup = (groupId: string, patch: Partial<BundlePipeGroupDraft>) => {
+    setGroups((prev) => prev.map((group) => (group.id === groupId ? { ...group, ...patch } : group)))
+  }
+
+  const addGroup = () => {
+    setGroups((prev) => [...prev, createEmptyGroup()])
+  }
+
+  const removeGroup = (groupId: string) => {
+    setGroups((prev) => {
+      if (prev.length <= 1) {
+        return prev
+      }
+      return prev.filter((group) => group.id !== groupId)
     })
+  }
+
+  const resetForm = () => {
+    setForm({ ...INITIAL_FORM, dateTimeLocal: nowDateTimeLocalValue() })
+    setGroups([createEmptyGroup()])
     setGaugePhotoFile(null)
     setSitePhotoFile(null)
     setIsDetectingPressure(false)
     setPressureHint(null)
-  }
-
-  const onResetLocalDatabase = async () => {
-    const ok = confirm('Reset local database?')
-    if (!ok) {
-      return
-    }
-
-    await db.delete()
-    window.location.reload()
   }
 
   const handleGaugePhotoChange = async (file: File | null) => {
@@ -94,7 +103,6 @@ export function CreateLogPage() {
       setIsDetectingPressure(true)
       const detected = await extractPressureFromImage(file)
 
-      // Ignore stale OCR results when user selected another file.
       if (ocrRequestRef.current !== requestId) {
         return
       }
@@ -118,7 +126,6 @@ export function CreateLogPage() {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-
     if (isSaving) {
       return
     }
@@ -126,15 +133,9 @@ export function CreateLogPage() {
     setErrorMessage(null)
     setSuccessMessage(null)
 
-    const bundleNumber = form.bundleNumber.trim()
     const logNumber = form.logNumber.trim()
     const pressureBar = Number(form.pressureBar)
     const dateTimeIso = dateTimeLocalToIso(form.dateTimeLocal)
-
-    if (!bundleNumber) {
-      setErrorMessage('Bundle number is required.')
-      return
-    }
 
     if (!logNumber) {
       setErrorMessage('Log number is required.')
@@ -151,38 +152,34 @@ export function CreateLogPage() {
       return
     }
 
-    if (parsedPipes.length === 0) {
-      setErrorMessage('Add at least one pipe number.')
-      return
-    }
-
     if (!gaugePhotoFile) {
       setErrorMessage('Gauge photo is required.')
       return
     }
 
+    const parsedGroups = groups.map((group) => ({
+      bundleNumber: group.bundleNumber.trim(),
+      pipeNumbers: parsePipeNumbers(group.pipesRaw),
+    }))
+
+    if (parsedGroups.some((group) => !group.bundleNumber)) {
+      setErrorMessage('Each group must have a bundle number.')
+      return
+    }
+
+    if (parsedGroups.some((group) => group.pipeNumbers.length === 0)) {
+      setErrorMessage('Each group must include at least one pipe.')
+      return
+    }
+
     try {
       setIsSaving(true)
-
-      // 1) Create or reuse bundle
-      const bundle = await getOrCreateBundleByNumber(bundleNumber)
-      if (typeof bundle.id !== 'number') {
-        throw new Error('Bundle ID is missing.')
-      }
-
-      // 2) create log
-      // 3) parse pipe numbers
-      // 4) create or reuse pipes
-      // 5) create log_pipes relations
-      // 6) save gauge photo blob
-      // 7) save optional site photo blob
-      const result = await createLogWithPipesAndPhotos({
-        bundle,
+      const result = await createLogWithBundleGroupsAndPhotos({
         logNumber,
         pressureBar,
         dateTimeIso,
         notes: form.notes,
-        pipeNumbers: parsedPipes,
+        bundleGroups: parsedGroups,
         gaugePhotoFile,
         sitePhotoFile: sitePhotoFile ?? undefined,
       })
@@ -203,33 +200,9 @@ export function CreateLogPage() {
   return (
     <section className="page">
       <h2>Create Log</h2>
-      <p className="muted">Bundle to log to pipes to photos to save</p>
-      {import.meta.env.DEV ? (
-        <div className="card-actions" style={{ marginBottom: '0.75rem' }}>
-          <button type="button" className="button-danger" onClick={() => void onResetLocalDatabase()}>
-            Reset Local Database
-          </button>
-        </div>
-      ) : null}
+      <p className="muted">One log can include pipes from multiple bundles.</p>
 
       <form className="entry-form" onSubmit={handleSubmit}>
-        <div className="field-group">
-          <label htmlFor="bundleNumber">Bundle Number</label>
-          <input
-            id="bundleNumber"
-            list="bundle-options"
-            value={form.bundleNumber}
-            onChange={(event) => setField('bundleNumber', event.target.value)}
-            placeholder="Example: 111304"
-            required
-          />
-          <datalist id="bundle-options">
-            {bundles.map((bundle) => (
-              <option key={bundle.id ?? bundle.bundle_number} value={bundle.bundle_number} />
-            ))}
-          </datalist>
-        </div>
-
         <div className="field-row">
           <div className="field-group">
             <label htmlFor="logNumber">Log Number</label>
@@ -279,6 +252,23 @@ export function CreateLogPage() {
           />
         </div>
 
+        <div className="card-actions">
+          <button type="button" onClick={addGroup}>Add Bundle Group</button>
+        </div>
+
+        {groups.map((group, index) => (
+          <BundlePipeGroupEditor
+            key={group.id}
+            index={index}
+            group={group}
+            bundleSuggestions={bundleSuggestions}
+            canRemove={groups.length > 1}
+            onBundleChange={(groupId, bundleNumber) => updateGroup(groupId, { bundleNumber })}
+            onPipesChange={(groupId, pipesRaw) => updateGroup(groupId, { pipesRaw })}
+            onRemove={removeGroup}
+          />
+        ))}
+
         <CameraCapture
           id="gaugePhoto"
           label="Gauge Photo (required)"
@@ -299,26 +289,6 @@ export function CreateLogPage() {
           onFileChange={setSitePhotoFile}
           removeLabel="Remove Site Photo"
         />
-
-        <div className="field-group">
-          <label htmlFor="pipesRaw">Pipe Numbers</label>
-          <textarea
-            id="pipesRaw"
-            rows={5}
-            value={form.pipesRaw}
-            onChange={(event) => setField('pipesRaw', event.target.value)}
-            placeholder="Use newline, comma, or space separators"
-            required
-          />
-          <small className="muted">
-            Unique pipes found: <strong>{parsedPipes.length}</strong>
-          </small>
-        </div>
-
-        <div className="preview-box">
-          <h3>Pipe Preview</h3>
-          <PipeList pipes={parsedPipes} />
-        </div>
 
         {errorMessage ? <p className="message error">{errorMessage}</p> : null}
         {successMessage ? <p className="message success">{successMessage}</p> : null}
